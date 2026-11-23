@@ -4,6 +4,7 @@ import com.rpgjr.mirana.enums.Priority;
 import com.rpgjr.mirana.enums.TicketType;
 
 import com.rpgjr.mirana.exception.ApiException;
+import com.rpgjr.mirana.service.github.GithubConnectService;
 import com.rpgjr.mirana.model.dto.project.ProjectDtos.*;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -27,9 +28,11 @@ public class ProjectService {
             {"Backlog", "BACKLOG"}, {"To do", "TODO"}, {"In progress", "IN_PROGRESS"}, {"Done", "DONE"}};
 
     private final JdbcClient db;
+    private final GithubConnectService github;
 
-    public ProjectService(JdbcClient db) {
+    public ProjectService(JdbcClient db, GithubConnectService github) {
         this.db = db;
+        this.github = github;
     }
 
     private static Timestamp now() {
@@ -64,6 +67,7 @@ public class ProjectService {
         List<String> repos = (repoNames == null ? List.<String>of() : repoNames).stream()
                 .filter(r -> r != null && !r.isBlank()).map(ProjectService::normalizeRepo).distinct().toList();
         repos.forEach(this::requireRepoFree);
+        repos.forEach(r -> github.requireAccess(userId, r));
         String slug = uniqueSlug(name);
         GeneratedKeyHolder keys = new GeneratedKeyHolder();
         db.sql("insert into project (name, slug, created_by, created_at) values (?, ?, ?, ?)")
@@ -118,6 +122,7 @@ public class ProjectService {
                     Map.of("repo", "A project can have at most 10 repositories."));
         }
         requireRepoFree(repo);
+        github.requireAccess(userId, repo);
         db.sql("insert into project_repo (project_id, repo) values (?, ?)").params(project.id(), repo).update();
         return db.sql("select repo from project_repo where project_id = ? order by repo")
                 .param(project.id()).query(String.class).list();

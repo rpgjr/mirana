@@ -7,7 +7,7 @@ public final class TestDb {
 
     private static final String[] TABLES = {"ticket_event", "ticket_comment", "ticket_pr_link", "ticket", "ticket_counter",
             "board_column", "project_invite", "project_member", "project", "SPRING_SESSION_ATTRIBUTES", "SPRING_SESSION",
-            "trusted_device", "api_token", "webhook_delivery", "email_otp", "user_credential", "app_user"};
+            "github_installation", "trusted_device", "api_token", "webhook_delivery", "email_otp", "user_credential", "app_user"};
 
     private TestDb() {
     }

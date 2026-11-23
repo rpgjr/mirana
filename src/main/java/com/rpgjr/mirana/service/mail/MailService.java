@@ -64,7 +64,11 @@ public class MailService {
             m.setText(body);
             sender.send(m);
         } catch (Exception e) {
-            log.error("Could not send '{}' mail: {}", subject, e.toString());
+            Throwable root = e;
+            while (root.getCause() != null && root.getCause() != root) {
+                root = root.getCause();
+            }
+            log.error("Could not send '{}' mail: {} (cause: {})", subject, e.toString(), root);
         }
     }
 }

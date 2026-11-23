@@ -75,14 +75,14 @@ class ProjectFlowTest {
 
         mvc.perform(get("/api/projects/hophop/board").with(ana())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.columns[0].name").value("Backlog"))
-                .andExpect(jsonPath("$.columns[0].tickets[0].key").value("FT-101"))
-                .andExpect(jsonPath("$.columns[0].tickets[1].key").value("FT-102"))
-                .andExpect(jsonPath("$.columns[0].tickets[2].key").value("BUG-101"));
-        mvc.perform(get("/api/projects/mepmep/tickets/FT-101").with(ana())).andExpect(status().isOk())
+                .andExpect(jsonPath("$.columns[0].tickets[0].key").value("FT-00001"))
+                .andExpect(jsonPath("$.columns[0].tickets[1].key").value("FT-00002"))
+                .andExpect(jsonPath("$.columns[0].tickets[2].key").value("BUG-00001"));
+        mvc.perform(get("/api/projects/mepmep/tickets/FT-00001").with(ana())).andExpect(status().isOk())
                 .andExpect(jsonPath("$.title").value("Other project"));
 
         mvc.perform(get("/api/projects/hophop/board").with(ben())).andExpect(status().isNotFound());
-        mvc.perform(get("/api/projects/hophop/tickets/FT-101").with(ben())).andExpect(status().isNotFound());
+        mvc.perform(get("/api/projects/hophop/tickets/FT-00001").with(ben())).andExpect(status().isNotFound());
         mvc.perform(get("/api/projects").with(ben())).andExpect(status().isOk()).andExpect(jsonPath("$.length()").value(0));
     }
 
@@ -93,13 +93,13 @@ class ProjectFlowTest {
             json("/api/projects/board/tickets", "{\"type\":\"FEATURE\",\"title\":\"" + t + "\"}", ana(), 201);
         }
         long done = jdbc.queryForObject("select id from board_column where name = 'Done'", Long.class);
-        json("/api/projects/board/tickets/FT-101/move", "{\"columnId\":" + done + ",\"position\":0}", ana(), 200);
-        json("/api/projects/board/tickets/FT-103/move", "{\"columnId\":" + done + ",\"position\":0}", ana(), 200);
+        json("/api/projects/board/tickets/FT-00001/move", "{\"columnId\":" + done + ",\"position\":0}", ana(), 200);
+        json("/api/projects/board/tickets/FT-00003/move", "{\"columnId\":" + done + ",\"position\":0}", ana(), 200);
         mvc.perform(get("/api/projects/board/board").with(ana()))
-                .andExpect(jsonPath("$.columns[3].tickets[0].key").value("FT-103"))
-                .andExpect(jsonPath("$.columns[3].tickets[1].key").value("FT-101"))
+                .andExpect(jsonPath("$.columns[3].tickets[0].key").value("FT-00003"))
+                .andExpect(jsonPath("$.columns[3].tickets[1].key").value("FT-00001"))
                 .andExpect(jsonPath("$.columns[0].tickets.length()").value(1));
-        mvc.perform(get("/api/projects/board/tickets/FT-101").with(ana()))
+        mvc.perform(get("/api/projects/board/tickets/FT-00001").with(ana()))
                 .andExpect(jsonPath("$.status").value("DONE"))
                 .andExpect(jsonPath("$.events[0].type").value("MOVED"));
     }
@@ -110,13 +110,65 @@ class ProjectFlowTest {
         json("/api/projects/upd/tickets", "{\"type\":\"HOTFIX\",\"title\":\"Fix it\"}", ana(), 201);
         json("/api/projects/upd/tickets", "{\"type\":\"HOTFIX\",\"title\":\"\"}", ana(), 400);
         json("/api/projects/upd/tickets", "{\"type\":\"HOTFIX\",\"title\":\"x\",\"assigneeId\":" + ben + "}", ana(), 400);
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/projects/upd/tickets/HF-101")
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/projects/upd/tickets/HF-00001")
                 .with(ana()).with(csrf()).contentType("application/json").content("{\"priority\":\"URGENT\",\"title\":\"Fixed title\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.priority").value("URGENT")).andExpect(jsonPath("$.title").value("Fixed title"));
-        json("/api/projects/upd/tickets/HF-101/comments", "{\"body\":\"Looks good\"}", ana(), 201);
-        mvc.perform(get("/api/projects/upd/tickets/HF-101").with(ana()))
+        json("/api/projects/upd/tickets/HF-00001/comments", "{\"body\":\"Looks good\"}", ana(), 201);
+        mvc.perform(get("/api/projects/upd/tickets/HF-00001").with(ana()))
                 .andExpect(jsonPath("$.comments[0].body").value("Looks good"))
                 .andExpect(jsonPath("$.comments[0].authorName").value("Ana"));
         assertThat(jdbc.queryForObject("select count(*) from ticket_event", Integer.class)).isGreaterThanOrEqualTo(3);
+    }
+
+    private void send(org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder b, RequestPostProcessor who, String body, int expected) throws Exception {
+        mvc.perform(b.with(who).with(csrf()).contentType("application/json").content(body)).andExpect(status().is(expected));
+    }
+
+    @Test
+    void ownerRenamesAndReplacesReposInOneStepMembersCannot() throws Exception {
+        json("/api/projects", "{\"name\":\"Old name\",\"repos\":[\"rpgjr/a\",\"rpgjr/b\"]}", ana(), 201);
+        json("/api/projects", "{\"name\":\"Other\",\"repos\":[\"rpgjr/taken\"]}", ana(), 201);
+        jdbc.update("insert into project_member (project_id, user_id, role) select id, ?, 'MEMBER' from project where slug = 'old-name'", ben);
+        var patch = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/projects/old-name");
+        var put = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/projects/old-name/repos");
+
+        send(patch, ana(), "{\"name\":\"New name\"}", 200);
+        mvc.perform(get("/api/projects/old-name/board").with(ana())).andExpect(jsonPath("$.project.name").value("New name"));
+        send(patch, ana(), "{\"name\":\"  \"}", 400);
+        send(patch, ben(), "{\"name\":\"Hijack\"}", 403);
+
+        send(put, ana(), "{\"repos\":[\"rpgjr/b\",\"rpgjr/c\"]}", 200);
+        assertThat(jdbc.queryForList("select repo from project_repo pr join project p on p.id = pr.project_id where p.slug = 'old-name' order by repo", String.class))
+                .containsExactly("rpgjr/b", "rpgjr/c");
+        send(put, ana(), "{\"repos\":[\"rpgjr/b\",\"rpgjr/taken\"]}", 409);
+        send(put, ben(), "{\"repos\":[]}", 403);
+    }
+
+    @Test
+    void ownerChangesTheKeyFormatAndExistingTicketsAreRenamed() throws Exception {
+        json("/api/projects", "{\"name\":\"Fmt\"}", ana(), 201);
+        json("/api/projects/fmt/tickets", "{\"type\":\"FEATURE\",\"title\":\"One\"}", ana(), 201);
+        json("/api/projects/fmt/tickets", "{\"type\":\"HOTFIX\",\"title\":\"Two\"}", ana(), 201);
+        jdbc.update("insert into project_member (project_id, user_id, role) select id, ?, 'MEMBER' from project where slug = 'fmt'", ben);
+        var put = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/projects/fmt/ticket-format");
+
+        send(put, ben(), "{\"digits\":3,\"featurePrefix\":\"MIR\",\"hotfixPrefix\":\"FIX\",\"bugfixPrefix\":\"BUG\"}", 403);
+        send(put, ana(), "{\"digits\":3,\"featurePrefix\":\"MIR\",\"hotfixPrefix\":\"MIR\",\"bugfixPrefix\":\"BUG\"}", 400);
+        send(put, ana(), "{\"digits\":9,\"featurePrefix\":\"MIR\",\"hotfixPrefix\":\"FIX\",\"bugfixPrefix\":\"BUG\"}", 400);
+        send(put, ana(), "{\"digits\":3,\"featurePrefix\":\"1X\",\"hotfixPrefix\":\"FIX\",\"bugfixPrefix\":\"BUG\"}", 400);
+        send(put, ana(), "{\"digits\":3,\"featurePrefix\":\"mir\",\"hotfixPrefix\":\"FIX\",\"bugfixPrefix\":\"BUG\"}", 200);
+
+        json("/api/projects/fmt/tickets", "{\"type\":\"FEATURE\",\"title\":\"Three\"}", ana(), 201);
+        mvc.perform(get("/api/projects/fmt/board").with(ana()))
+                .andExpect(jsonPath("$.format.featurePrefix").value("MIR"))
+                .andExpect(jsonPath("$.columns[0].tickets[0].key").value("MIR-001"))
+                .andExpect(jsonPath("$.columns[0].tickets[1].key").value("FIX-001"))
+                .andExpect(jsonPath("$.columns[0].tickets[2].key").value("MIR-002"));
+
+        // Swapping two prefixes must not collide on the unique key.
+        send(put, ana(), "{\"digits\":5,\"featurePrefix\":\"FIX\",\"hotfixPrefix\":\"MIR\",\"bugfixPrefix\":\"BUG\"}", 200);
+        mvc.perform(get("/api/projects/fmt/board").with(ana()))
+                .andExpect(jsonPath("$.columns[0].tickets[0].key").value("FIX-00001"))
+                .andExpect(jsonPath("$.columns[0].tickets[1].key").value("MIR-00001"));
     }
 }

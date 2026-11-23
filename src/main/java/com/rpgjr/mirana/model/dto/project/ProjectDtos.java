@@ -3,6 +3,8 @@ package com.rpgjr.mirana.model.dto.project;
 import com.rpgjr.mirana.enums.Priority;
 import com.rpgjr.mirana.enums.TicketType;
 
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
@@ -12,6 +14,7 @@ import java.util.List;
 
 public final class ProjectDtos {
 
+    public static final String PREFIX_PATTERN = "^[A-Za-z][A-Za-z0-9]{1,5}$";
     public static final String REPO_PATTERN = "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$";
 
     private ProjectDtos() {
@@ -31,6 +34,20 @@ public final class ProjectDtos {
             @Pattern(regexp = REPO_PATTERN, message = "Use owner/repo, like rpgjr/hophop.") String repo) {
     }
 
+    public record UpdateProjectRequest(
+            @NotBlank(message = "Enter a project name.") @Size(max = 100, message = "Name is too long.") String name) {
+    }
+
+    public record SetReposRequest(@Size(max = 10, message = "A project can have at most 10 repositories.") List<@Pattern(regexp = REPO_PATTERN, message = "Use the form owner/repo.") String> repos) {
+    }
+
+    public record UpdateTicketFormatRequest(
+            @Min(value = 1, message = "Use 1 to 8 digits.") @Max(value = 8, message = "Use 1 to 8 digits.") int digits,
+            @NotBlank(message = "Enter a prefix.") @Pattern(regexp = PREFIX_PATTERN, message = "Use 2 to 6 letters or digits, starting with a letter.") String featurePrefix,
+            @NotBlank(message = "Enter a prefix.") @Pattern(regexp = PREFIX_PATTERN, message = "Use 2 to 6 letters or digits, starting with a letter.") String hotfixPrefix,
+            @NotBlank(message = "Enter a prefix.") @Pattern(regexp = PREFIX_PATTERN, message = "Use 2 to 6 letters or digits, starting with a letter.") String bugfixPrefix) {
+    }
+
     public record Member(Long id, String displayName, String email, String role) {
     }
 
@@ -41,7 +58,7 @@ public final class ProjectDtos {
     public record Column(Long id, String name, String status, int position, List<TicketCard> tickets) {
     }
 
-    public record Board(ProjectSummary project, List<Column> columns, List<Member> members) {
+    public record Board(ProjectSummary project, List<Column> columns, List<Member> members, TicketFormat format) {
     }
 
     public record CreateTicketRequest(

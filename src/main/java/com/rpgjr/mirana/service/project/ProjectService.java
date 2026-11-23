@@ -5,7 +5,9 @@ import com.rpgjr.mirana.enums.TicketType;
 
 import com.rpgjr.mirana.exception.ApiException;
 import com.rpgjr.mirana.service.github.GithubConnectService;
+
 import com.rpgjr.mirana.model.dto.project.ProjectDtos.*;
+import com.rpgjr.mirana.model.dto.project.TicketFormat;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -29,10 +31,12 @@ public class ProjectService {
 
     private final JdbcClient db;
     private final GithubConnectService github;
+    private final TicketFormatReader formats;
 
-    public ProjectService(JdbcClient db, GithubConnectService github) {
+    public ProjectService(JdbcClient db, GithubConnectService github, TicketFormatReader formats) {
         this.db = db;
         this.github = github;
+        this.formats = formats;
     }
 
     private static Timestamp now() {
@@ -81,7 +85,7 @@ public class ProjectService {
                     .params(projectId, DEFAULT_COLUMNS[i][0], i, DEFAULT_COLUMNS[i][1]).update();
         }
         for (TicketType t : TicketType.values()) {
-            db.sql("insert into ticket_counter (project_id, prefix, last_number) values (?, ?, 100)")
+            db.sql("insert into ticket_counter (project_id, prefix, last_number) values (?, ?, 0)")
                     .params(projectId, t.prefix()).update();
         }
         return new ProjectSummary(projectId, name.trim(), slug, repos, "OWNER", 0);
@@ -114,6 +118,53 @@ public class ProjectService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Project not found."));
     }
 
+    /** Changes the key format and renames every existing ticket to match. Numbers never change. */
+    public TicketFormat setTicketFormat(String slug, Long userId, UpdateTicketFormatRequest r) {
+        ProjectSummary project = requireOwner(slug, userId);
+        TicketFormat f = new TicketFormat(r.digits(), r.featurePrefix().toUpperCase(Locale.ROOT),
+                r.hotfixPrefix().toUpperCase(Locale.ROOT), r.bugfixPrefix().toUpperCase(Locale.ROOT));
+        if (f.featurePrefix().equals(f.hotfixPrefix()) || f.featurePrefix().equals(f.bugfixPrefix()) || f.hotfixPrefix().equals(f.bugfixPrefix())) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "DUPLICATE_PREFIX", "Each ticket type needs its own prefix.",
+                    Map.of("featurePrefix", "Each ticket type needs its own prefix."));
+        }
+        db.sql("update project set key_digits = ?, prefix_feature = ?, prefix_hotfix = ?, prefix_bugfix = ? where id = ?")
+                .params(f.digits(), f.featurePrefix(), f.hotfixPrefix(), f.bugfixPrefix(), project.id()).update();
+        // Two steps, because a swap such as FT to HF and HF to FT would otherwise collide on the unique key.
+        db.sql("update ticket set ticket_key = concat('~', id) where project_id = ?").param(project.id()).update();
+        for (TicketType t : TicketType.values()) {
+            db.sql("update ticket set ticket_key = concat(?, '-', lpad(number, ?, '0')) where project_id = ? and type = ?")
+                    .params(f.prefix(t), f.digits(), project.id(), t.name()).update();
+        }
+        return f;
+    }
+
+    /** Renames the project. The slug stays the same so links and bookmarks keep working. */
+    public ProjectSummary rename(String slug, Long userId, String name) {
+        ProjectSummary project = requireOwner(slug, userId);
+        db.sql("update project set name = ? where id = ?").params(name.trim(), project.id()).update();
+        return requireMember(slug, userId);
+    }
+
+    /** Replaces the whole repository list in one step. Only repositories that are new to the project are checked. */
+    public List<String> setRepos(String slug, Long userId, List<String> repoNames) {
+        ProjectSummary project = requireOwner(slug, userId);
+        List<String> wanted = (repoNames == null ? List.<String>of() : repoNames).stream()
+                .filter(r -> r != null && !r.isBlank()).map(ProjectService::normalizeRepo).distinct().toList();
+        if (wanted.size() > 10) {
+            throw new ApiException(HttpStatus.CONFLICT, "TOO_MANY_REPOS", "A project can have at most 10 repositories.",
+                    Map.of("repos", "A project can have at most 10 repositories."));
+        }
+        List<String> current = project.repos();
+        List<String> added = wanted.stream().filter(r -> !current.contains(r)).toList();
+        added.forEach(this::requireRepoFree);
+        added.forEach(r -> github.requireAccess(userId, r));
+        current.stream().filter(r -> !wanted.contains(r)).forEach(r ->
+                db.sql("delete from project_repo where project_id = ? and repo = ?").params(project.id(), r).update());
+        added.forEach(r -> db.sql("insert into project_repo (project_id, repo) values (?, ?)").params(project.id(), r).update());
+        return db.sql("select repo from project_repo where project_id = ? order by repo")
+                .param(project.id()).query(String.class).list();
+    }
+
     public List<String> addRepo(String slug, Long userId, String repoName) {
         ProjectSummary project = requireOwner(slug, userId);
         String repo = normalizeRepo(repoName);
@@ -139,7 +190,7 @@ public class ProjectService {
     private ProjectSummary requireOwner(String slug, Long userId) {
         ProjectSummary project = requireMember(slug, userId);
         if (!"OWNER".equals(project.role())) {
-            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only the project owner can change repositories.");
+            throw new ApiException(HttpStatus.FORBIDDEN, "FORBIDDEN", "Only the project owner can change project settings.");
         }
         return project;
     }
@@ -189,7 +240,7 @@ public class ProjectService {
                     }
                     return card;
                 }).list();
-        return new Board(project, new ArrayList<>(columns.values()), members(project.id()));
+        return new Board(project, new ArrayList<>(columns.values()), members(project.id()), formats.load(project.id()));
     }
 
     // ---------- tickets ----------
@@ -204,14 +255,14 @@ public class ProjectService {
         }
         String prefix = r.type().prefix();
         int number = db.sql("select last_number from ticket_counter where project_id = ? and prefix = ? for update")
-                .params(project.id(), prefix).query(Integer.class).optional().map(n -> n + 1).orElse(101);
+                .params(project.id(), prefix).query(Integer.class).optional().map(n -> n + 1).orElse(1);
         db.sql("""
                 insert into ticket_counter (project_id, prefix, last_number) values (?, ?, ?)
                 on duplicate key update last_number = values(last_number)""")
                 .params(project.id(), prefix, number).update();
         int position = db.sql("select coalesce(max(position) + 1, 0) from ticket where column_id = ?")
                 .param(columnId).query(Integer.class).single();
-        String key = prefix + "-" + number;
+        String key = formats.load(project.id()).key(r.type(), number);
         Timestamp ts = now();
         GeneratedKeyHolder keys = new GeneratedKeyHolder();
         db.sql("""

@@ -1,12 +1,12 @@
 package com.rpgjr.mirana.service.github;
 
+import com.rpgjr.mirana.service.project.TicketFormatReader;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
@@ -21,16 +21,17 @@ import tools.jackson.databind.json.JsonMapper;
 public class GithubWebhookService {
 
     private static final Logger log = LoggerFactory.getLogger(GithubWebhookService.class);
-    private static final Pattern KEY = Pattern.compile("\\b(FT|HF|BUG)-(\\d{1,9})\\b", Pattern.CASE_INSENSITIVE);
     /** Only people with a role on the repository can link a PR to a ticket; anyone can open a PR on a public repo. */
     private static final Set<String> TRUSTED_AUTHORS = Set.of("OWNER", "MEMBER", "COLLABORATOR");
     private static final Set<String> PR_ACTIONS = Set.of("opened", "reopened", "edited", "synchronize", "closed", "ready_for_review");
 
     private final JdbcClient db;
+    private final TicketFormatReader formats;
     private final JsonMapper json = JsonMapper.builder().build();
 
-    public GithubWebhookService(JdbcClient db) {
+    public GithubWebhookService(JdbcClient db, TicketFormatReader formats) {
         this.db = db;
+        this.formats = formats;
     }
 
     public void handle(String deliveryId, String event, byte[] body) {
@@ -71,11 +72,9 @@ public class GithubWebhookService {
         String state = !"closed".equals(pr.path("state").asString("")) ? "OPEN" : pr.path("merged").asBoolean(false) ? "MERGED" : "CLOSED";
 
         Set<String> keys = new LinkedHashSet<>();
+        var format = formats.load(projectId);
         for (String text : new String[] {branch, title, pr.path("body").asString("")}) {
-            Matcher m = KEY.matcher(text);
-            while (m.find()) {
-                keys.add(m.group(1).toUpperCase(Locale.ROOT) + "-" + m.group(2));
-            }
+            keys.addAll(format.find(text));
         }
         for (String key : keys) {
             Long ticketId = db.sql("select id from ticket where project_id = ? and ticket_key = ?")

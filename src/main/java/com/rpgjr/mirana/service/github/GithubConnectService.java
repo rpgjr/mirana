@@ -2,6 +2,7 @@ package com.rpgjr.mirana.service.github;
 
 import com.rpgjr.mirana.config.GithubProperties;
 import com.rpgjr.mirana.exception.ApiException;
+import com.rpgjr.mirana.service.project.TicketFormatReader;
 import com.rpgjr.mirana.model.dto.github.GithubDtos.*;
 import jakarta.servlet.http.HttpSession;
 import java.net.URLEncoder;
@@ -15,7 +16,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -30,14 +30,15 @@ public class GithubConnectService {
 
     private static final Logger log = LoggerFactory.getLogger(GithubConnectService.class);
     private static final String STATE = "github.state";
-    private static final Pattern TICKET_KEY = Pattern.compile("\\b(FT|HF|BUG)-(\\d{1,9})\\b");
 
     private final JdbcClient db;
     private final GithubApi github;
     private final GithubProperties props;
+    private final TicketFormatReader formats;
     private final SecureRandom random = new SecureRandom();
 
-    public GithubConnectService(JdbcClient db, GithubApi github, GithubProperties props) {
+    public GithubConnectService(JdbcClient db, GithubApi github, GithubProperties props, TicketFormatReader formats) {
+        this.formats = formats;
         this.db = db;
         this.github = github;
         this.props = props;
@@ -108,8 +109,9 @@ public class GithubConnectService {
         requireEnabled();
         Stored s = installationFor(userId, repo).orElseThrow(() ->
                 new ApiException(HttpStatus.NOT_FOUND, "REPO_NOT_CONNECTED", "That repository is not under a GitHub account you connected."));
+        var format = formats.forRepo(repo.toLowerCase(Locale.ROOT));
         return github.pulls(s.installationId(), repo).stream().map(p -> new PullView(p.number(), p.title(), p.state(),
-                p.merged(), p.draft(), p.author(), p.url(), p.updatedAt(), keys(p.title()))).toList();
+                p.merged(), p.draft(), p.author(), p.url(), p.updatedAt(), format.find(p.title()))).toList();
     }
 
     /** Projects may only track repositories the user can reach through their own installation. Off when GitHub is not set up. */
@@ -169,15 +171,6 @@ public class GithubConnectService {
         return "Organization".equalsIgnoreCase(s.type())
                 ? "https://github.com/organizations/" + s.login() + "/settings/installations/" + s.installationId()
                 : "https://github.com/settings/installations/" + s.installationId();
-    }
-
-    private static List<String> keys(String title) {
-        Set<String> found = new java.util.LinkedHashSet<>();
-        Matcher m = TICKET_KEY.matcher(title == null ? "" : title);
-        while (m.find()) {
-            found.add(m.group(1) + "-" + m.group(2));
-        }
-        return List.copyOf(found);
     }
 
     private static String enc(String s) {

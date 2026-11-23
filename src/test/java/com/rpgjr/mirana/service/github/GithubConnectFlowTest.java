@@ -111,7 +111,7 @@ class GithubConnectFlowTest {
                 .andExpect(jsonPath("$[0].fullName").value("rpgjr/hophop"));
         mvc.perform(get("/api/github/pulls").param("repo", "rpgjr/hophop").with(asAna()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$[0].merged").value(true))
-                .andExpect(jsonPath("$[0].ticketKeys[0]").value("FT-101")).andExpect(jsonPath("$[0].ticketKeys[1]").value("BUG-7"));
+                .andExpect(jsonPath("$[0].ticketKeys[0]").value("FT-00101")).andExpect(jsonPath("$[0].ticketKeys[1]").value("BUG-00007"));
         mvc.perform(get("/api/github/pulls").param("repo", "someoneelse/secret").with(asAna()))
                 .andExpect(status().isNotFound());
     }

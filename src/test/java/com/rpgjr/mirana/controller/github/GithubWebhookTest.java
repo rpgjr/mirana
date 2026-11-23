@@ -72,18 +72,37 @@ class GithubWebhookTest {
 
     @Test
     void rejectsMissingOrWrongSignature() throws Exception {
-        String body = pr("opened", "open", false, "ft-101-login", "rpgjr/hophop");
+        String body = pr("opened", "open", false, "ft-00001-login", "rpgjr/hophop");
         send("d1", "pull_request", body, null).andExpect(status().isUnauthorized());
         send("d2", "pull_request", body, "sha256=deadbeef").andExpect(status().isUnauthorized());
         assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isZero();
     }
 
     @Test
+    void aBranchNamedExactlyLikeTheTicketKeyLinksAndShortFormsToo() throws Exception {
+        assertThat(key).isEqualTo("FT-00001");
+        sendSigned("d1", pr("opened", "open", false, key, "rpgjr/hophop")).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isEqualTo(1);
+        sendSigned("d2", pr("opened", "open", false, "ft-1", "RpgJr/Hophop-Ui")).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isEqualTo(2);
+    }
+
+    @Test
+    void usesTheProjectsOwnKeyFormat() throws Exception {
+        jdbc.update("update project set key_digits = 3, prefix_feature = 'MIR'");
+        jdbc.update("update ticket set ticket_key = 'MIR-001'");
+        sendSigned("d1", pr("opened", "open", false, "MIR-1", "rpgjr/hophop")).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isEqualTo(1);
+        sendSigned("d2", pr("opened", "open", false, "FT-00001", "rpgjr/hophop")).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
     void linksPullRequestByBranchKeyThenTracksMerge() throws Exception {
-        sendSigned("d1", pr("opened", "open", false, "feature/FT-101-login", "rpgjr/hophop")).andExpect(status().isOk());
+        sendSigned("d1", pr("opened", "open", false, "feature/FT-00001-login", "rpgjr/hophop")).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("select state from ticket_pr_link", String.class)).isEqualTo("OPEN");
 
-        sendSigned("d2", pr("closed", "closed", true, "feature/FT-101-login", "rpgjr/hophop")).andExpect(status().isOk());
+        sendSigned("d2", pr("closed", "closed", true, "feature/FT-00001-login", "rpgjr/hophop")).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isEqualTo(1);
         assertThat(jdbc.queryForObject("select state from ticket_pr_link", String.class)).isEqualTo("MERGED");
         assertThat(jdbc.queryForObject("select count(*) from ticket_event where actor_type = 'GITHUB'", Integer.class)).isEqualTo(2);
@@ -91,8 +110,8 @@ class GithubWebhookTest {
 
     @Test
     void oneProjectLinksPullRequestsFromEveryRepoRegardlessOfCase() throws Exception {
-        sendSigned("d1", pr("opened", "open", false, "FT-101", "rpgjr/hophop")).andExpect(status().isOk());
-        sendSigned("d2", pr("opened", "open", false, "FT-101", "RpgJr/Hophop-Ui")).andExpect(status().isOk());
+        sendSigned("d1", pr("opened", "open", false, "FT-00001", "rpgjr/hophop")).andExpect(status().isOk());
+        sendSigned("d2", pr("opened", "open", false, "FT-00001", "RpgJr/Hophop-Ui")).andExpect(status().isOk());
         assertThat(jdbc.queryForList("select repo from ticket_pr_link order by repo", String.class))
                 .containsExactly("rpgjr/hophop", "rpgjr/hophop-ui");
     }
@@ -106,16 +125,16 @@ class GithubWebhookTest {
 
     @Test
     void ignoresPullRequestsFromOutsideContributors() throws Exception {
-        sendSigned("d1", pr("opened", "open", false, "FT-101", "rpgjr/hophop", "NONE")).andExpect(status().isOk());
-        sendSigned("d2", pr("opened", "open", false, "FT-101", "rpgjr/hophop", "FIRST_TIME_CONTRIBUTOR")).andExpect(status().isOk());
+        sendSigned("d1", pr("opened", "open", false, "FT-00001", "rpgjr/hophop", "NONE")).andExpect(status().isOk());
+        sendSigned("d2", pr("opened", "open", false, "FT-00001", "rpgjr/hophop", "FIRST_TIME_CONTRIBUTOR")).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isZero();
-        sendSigned("d3", pr("opened", "open", false, "FT-101", "rpgjr/hophop", "COLLABORATOR")).andExpect(status().isOk());
+        sendSigned("d3", pr("opened", "open", false, "FT-00001", "rpgjr/hophop", "COLLABORATOR")).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isEqualTo(1);
     }
 
     @Test
     void replayedDeliveryIsIgnored() throws Exception {
-        String body = pr("opened", "open", false, "FT-101", "rpgjr/hophop");
+        String body = pr("opened", "open", false, "FT-00001", "rpgjr/hophop");
         sendSigned("same", body).andExpect(status().isOk());
         jdbc.update("update ticket_pr_link set state = 'CLOSED'");
         sendSigned("same", body).andExpect(status().isOk());
@@ -124,8 +143,8 @@ class GithubWebhookTest {
 
     @Test
     void ignoresOtherReposAndUnknownKeys() throws Exception {
-        sendSigned("d1", pr("opened", "open", false, "FT-101", "someone/else")).andExpect(status().isOk());
-        sendSigned("d2", pr("opened", "open", false, "FT-999", "rpgjr/hophop")).andExpect(status().isOk());
+        sendSigned("d1", pr("opened", "open", false, "FT-00001", "someone/else")).andExpect(status().isOk());
+        sendSigned("d2", pr("opened", "open", false, "FT-00999", "rpgjr/hophop")).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isZero();
     }
 }

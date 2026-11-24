@@ -43,9 +43,58 @@ public class GithubWebhookService {
         }
         if ("pull_request".equals(event)) {
             pullRequest(json.readTree(body));
+        } else if ("push".equals(event)) {
+            push(json.readTree(body));
         }
         db.sql("update webhook_delivery set processed_at = ? where delivery_id = ?")
                 .params(Timestamp.from(Instant.now()), deliveryId).update();
+    }
+
+    /**
+     * Records each commit of a push on the tickets named in the branch or in the commit message. The event detail is
+     * three parts split by a tab: the short sha, the first line of the message and the author.
+     */
+    private void push(JsonNode root) {
+        String ref = root.path("ref").asString("");
+        String repo = root.path("repository").path("full_name").asString("").toLowerCase(java.util.Locale.ROOT);
+        if (!ref.startsWith("refs/heads/") || root.path("deleted").asBoolean(false) || repo.isBlank()) {
+            return;
+        }
+        Long projectId = db.sql("select project_id from project_repo where repo = ?").param(repo).query(Long.class).optional().orElse(null);
+        if (projectId == null) {
+            return;
+        }
+        String branch = ref.substring("refs/heads/".length());
+        var format = formats.load(projectId);
+        int seen = 0;
+        for (JsonNode c : root.path("commits")) {
+            if (++seen > 20) {
+                break;
+            }
+            String sha = c.path("id").asString("");
+            String message = c.path("message").asString("");
+            String first = cut(message.lines().findFirst().orElse(""), 200);
+            Set<String> keys = new LinkedHashSet<>(format.find(branch));
+            keys.addAll(format.find(message));
+            for (String key : keys) {
+                Long ticketId = db.sql("select id from ticket where project_id = ? and ticket_key = ?")
+                        .params(projectId, key).query(Long.class).optional().orElse(null);
+                if (ticketId == null || sha.length() < 7) {
+                    continue;
+                }
+                String short7 = sha.substring(0, 7);
+                int already = db.sql("select count(*) from ticket_event where ticket_id = ? and event_type = 'COMMIT' and json_unquote(json_extract(payload, '$.sha')) = ?")
+                        .params(ticketId, short7).query(Integer.class).single();
+                if (already > 0) {
+                    continue;
+                }
+                String detail = short7 + "\t" + first + "\t" + cut(c.path("author").path("name").asString(""), 100);
+                db.sql("insert into ticket_event (ticket_id, actor_type, event_type, payload, created_at) values (?, 'GITHUB', 'COMMIT', ?, ?)")
+                        .params(ticketId, json.writeValueAsString(java.util.Map.of("detail", detail, "sha", short7, "branch", branch)),
+                                Timestamp.from(Instant.now()))
+                        .update();
+            }
+        }
     }
 
     private void pullRequest(JsonNode root) {

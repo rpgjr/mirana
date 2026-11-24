@@ -57,7 +57,7 @@ class GithubConnectFlowTest {
         when(github.installationRepos(eq(77L))).thenReturn(List.of(
                 new GithubApi.Repo("rpgjr/hophop", "Backend", true), new GithubApi.Repo("rpgjr/hophop-ui", "", false)));
         when(github.pulls(eq(77L), eq("rpgjr/hophop"))).thenReturn(List.of(
-                new GithubApi.Pull(4, "FT-101 add login, fixes BUG-7", "closed", true, false, "rpgjr", "https://github.com/rpgjr/hophop/pull/4", "2026-11-23T01:00:00Z")));
+                new GithubApi.Pull(4, "FT-101 add login, also FT-7", "closed", true, false, "rpgjr", "https://github.com/rpgjr/hophop/pull/4", "2026-11-23T01:00:00Z")));
     }
 
     private RequestPostProcessor asAna() {
@@ -111,7 +111,7 @@ class GithubConnectFlowTest {
                 .andExpect(jsonPath("$[0].fullName").value("rpgjr/hophop"));
         mvc.perform(get("/api/github/pulls").param("repo", "rpgjr/hophop").with(asAna()))
                 .andExpect(status().isOk()).andExpect(jsonPath("$[0].merged").value(true))
-                .andExpect(jsonPath("$[0].ticketKeys[0]").value("FT-00101")).andExpect(jsonPath("$[0].ticketKeys[1]").value("BUG-00007"));
+                .andExpect(jsonPath("$[0].ticketKeys[0]").value("FT-00101")).andExpect(jsonPath("$[0].ticketKeys[1]").value("FT-00007"));
         mvc.perform(get("/api/github/pulls").param("repo", "someoneelse/secret").with(asAna()))
                 .andExpect(status().isNotFound());
     }

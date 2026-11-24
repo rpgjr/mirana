@@ -1,7 +1,5 @@
 package com.rpgjr.mirana.service.project;
 
-import com.rpgjr.mirana.enums.Priority;
-import com.rpgjr.mirana.enums.TicketType;
 
 import com.rpgjr.mirana.exception.ApiException;
 import com.rpgjr.mirana.service.github.GithubConnectService;
@@ -27,7 +25,16 @@ import org.springframework.transaction.annotation.Transactional;
 public class ProjectService {
 
     private static final String[][] DEFAULT_COLUMNS = {
-            {"Backlog", "BACKLOG"}, {"To do", "TODO"}, {"In progress", "IN_PROGRESS"}, {"Done", "DONE"}};
+            {"Backlog", "BACKLOG", "#64748b"}, {"On hold", "HOLD", "#f59e0b"}, {"In progress", "IN_PROGRESS", "#3b82f6"},
+            {"In review", "REVIEW", "#a855f7"}, {"Done", "DONE", "#22c55e"}};
+    private static final String[][] DEFAULT_PRIORITIES = {
+            {"Low", "#64748b"}, {"Medium", "#3b82f6"}, {"High", "#f97316"}, {"Urgent", "#ef4444"}};
+    private static final int MAX_PRIORITIES = 8;
+    /** The one number sequence of a project lives in this counter row. The key prefix the user sees is separate. */
+    private static final String COUNTER = "FT";
+    private static final int MAX_COLUMNS = 12;
+    private static final int MAX_TAGS = 30;
+    private static final int MAX_TICKET_TAGS = 8;
 
     private final JdbcClient db;
     private final GithubConnectService github;
@@ -81,13 +88,14 @@ public class ProjectService {
         db.sql("insert into project_member (project_id, user_id, role, joined_at) values (?, ?, 'OWNER', ?)")
                 .params(projectId, userId, now()).update();
         for (int i = 0; i < DEFAULT_COLUMNS.length; i++) {
-            db.sql("insert into board_column (project_id, name, position, status) values (?, ?, ?, ?)")
-                    .params(projectId, DEFAULT_COLUMNS[i][0], i, DEFAULT_COLUMNS[i][1]).update();
+            db.sql("insert into board_column (project_id, name, position, status, color) values (?, ?, ?, ?, ?)")
+                    .params(projectId, DEFAULT_COLUMNS[i][0], i, DEFAULT_COLUMNS[i][1], DEFAULT_COLUMNS[i][2]).update();
         }
-        for (TicketType t : TicketType.values()) {
-            db.sql("insert into ticket_counter (project_id, prefix, last_number) values (?, ?, 0)")
-                    .params(projectId, t.prefix()).update();
+        for (int i = 0; i < DEFAULT_PRIORITIES.length; i++) {
+            db.sql("insert into ticket_priority (project_id, name, color, position) values (?, ?, ?, ?)")
+                    .params(projectId, DEFAULT_PRIORITIES[i][0], DEFAULT_PRIORITIES[i][1], i).update();
         }
+        db.sql("insert into ticket_counter (project_id, prefix, last_number) values (?, ?, 0)").params(projectId, COUNTER).update();
         return new ProjectSummary(projectId, name.trim(), slug, repos, "OWNER", 0);
     }
 
@@ -118,23 +126,216 @@ public class ProjectService {
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Project not found."));
     }
 
-    /** Changes the key format and renames every existing ticket to match. Numbers never change. */
+    // ---------- tags and priorities ----------
+
+    List<TagView> tags(Long projectId) {
+        return db.sql("select id, name, color from project_tag where project_id = ? order by name")
+                .param(projectId).query((rs, i) -> new TagView(rs.getLong(1), rs.getString(2), rs.getString(3))).list();
+    }
+
+    List<PriorityView> priorities(Long projectId) {
+        return db.sql("select id, name, color from ticket_priority where project_id = ? order by position")
+                .param(projectId).query((rs, i) -> new PriorityView(rs.getLong(1), rs.getString(2), rs.getString(3))).list();
+    }
+
+    public Board addTag(String slug, Long userId, String name, String color) {
+        ProjectSummary project = requireOwner(slug, userId);
+        if (db.sql("select count(*) from project_tag where project_id = ?").param(project.id()).query(Integer.class).single() >= MAX_TAGS) {
+            throw new ApiException(HttpStatus.CONFLICT, "TOO_MANY_TAGS", "A project can have at most " + MAX_TAGS + " tags.");
+        }
+        try {
+            db.sql("insert into project_tag (project_id, name, color) values (?, ?, ?)").params(project.id(), name.trim(), color).update();
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            throw new ApiException(HttpStatus.CONFLICT, "TAG_EXISTS", "That tag already exists.", Map.of("name", "That tag already exists."));
+        }
+        return board(slug, userId);
+    }
+
+    public Board updateTag(String slug, Long userId, Long tagId, String name, String color) {
+        ProjectSummary project = requireOwner(slug, userId);
+        requireTag(project.id(), tagId);
+        try {
+            if (name != null && !name.isBlank()) {
+                db.sql("update project_tag set name = ? where id = ?").params(name.trim(), tagId).update();
+            }
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            throw new ApiException(HttpStatus.CONFLICT, "TAG_EXISTS", "That tag already exists.", Map.of("name", "That tag already exists."));
+        }
+        if (color != null) {
+            db.sql("update project_tag set color = ? where id = ?").params(color, tagId).update();
+        }
+        return board(slug, userId);
+    }
+
+    public Board deleteTag(String slug, Long userId, Long tagId) {
+        ProjectSummary project = requireOwner(slug, userId);
+        requireTag(project.id(), tagId);
+        db.sql("delete from project_tag where id = ?").param(tagId).update();
+        return board(slug, userId);
+    }
+
+    public Board addPriority(String slug, Long userId, String name, String color) {
+        ProjectSummary project = requireOwner(slug, userId);
+        int count = db.sql("select count(*) from ticket_priority where project_id = ?").param(project.id()).query(Integer.class).single();
+        if (count >= MAX_PRIORITIES) {
+            throw new ApiException(HttpStatus.CONFLICT, "TOO_MANY_PRIORITIES", "A project can have at most " + MAX_PRIORITIES + " priorities.");
+        }
+        db.sql("insert into ticket_priority (project_id, name, color, position) values (?, ?, ?, ?)")
+                .params(project.id(), name.trim(), color, count).update();
+        return board(slug, userId);
+    }
+
+    public Board updatePriority(String slug, Long userId, Long priorityId, String name, String color) {
+        ProjectSummary project = requireOwner(slug, userId);
+        requirePriority(project.id(), priorityId);
+        if (name != null && !name.isBlank()) {
+            db.sql("update ticket_priority set name = ? where id = ?").params(name.trim(), priorityId).update();
+        }
+        if (color != null) {
+            db.sql("update ticket_priority set color = ? where id = ?").params(color, priorityId).update();
+        }
+        return board(slug, userId);
+    }
+
+    /** A priority that tickets still use cannot go, and at least one always stays. */
+    public Board deletePriority(String slug, Long userId, Long priorityId) {
+        ProjectSummary project = requireOwner(slug, userId);
+        requirePriority(project.id(), priorityId);
+        if (db.sql("select count(*) from ticket_priority where project_id = ?").param(project.id()).query(Integer.class).single() <= 1) {
+            throw new ApiException(HttpStatus.CONFLICT, "PRIORITY_REQUIRED", "A project needs at least one priority.");
+        }
+        if (db.sql("select count(*) from ticket where priority_id = ?").param(priorityId).query(Integer.class).single() > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "PRIORITY_IN_USE", "Change those tickets to another priority first.");
+        }
+        db.sql("delete from ticket_priority where id = ?").param(priorityId).update();
+        applyPriorityOrder(project.id(), db.sql("select id from ticket_priority where project_id = ? order by position").param(project.id()).query(Long.class).list());
+        return board(slug, userId);
+    }
+
+    public Board reorderPriorities(String slug, Long userId, List<Long> ids) {
+        ProjectSummary project = requireOwner(slug, userId);
+        List<Long> current = db.sql("select id from ticket_priority where project_id = ?").param(project.id()).query(Long.class).list();
+        if (ids.size() != current.size() || !current.containsAll(ids) || ids.stream().distinct().count() != ids.size()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "BAD_ORDER", "Send every priority exactly once.");
+        }
+        applyPriorityOrder(project.id(), ids);
+        return board(slug, userId);
+    }
+
+    private void applyPriorityOrder(Long projectId, List<Long> ids) {
+        db.sql("update ticket_priority set position = position + 1000 where project_id = ?").param(projectId).update();
+        for (int i = 0; i < ids.size(); i++) {
+            db.sql("update ticket_priority set position = ? where id = ? and project_id = ?").params(i, ids.get(i), projectId).update();
+        }
+    }
+
+    private void requirePriority(Long projectId, Long priorityId) {
+        if (priorityId == null || db.sql("select count(*) from ticket_priority where id = ? and project_id = ?").params(priorityId, projectId).query(Integer.class).single() == 0) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "BAD_PRIORITY", "Pick one of this project's priorities.");
+        }
+    }
+
+    /** The middle priority, which is Medium by default, is what a new ticket gets when none is chosen. */
+    private long defaultPriority(Long projectId) {
+        List<Long> ids = db.sql("select id from ticket_priority where project_id = ? order by position").param(projectId).query(Long.class).list();
+        return ids.get(Math.min(1, ids.size() - 1));
+    }
+
+    private void requireTag(Long projectId, Long tagId) {
+        if (db.sql("select count(*) from project_tag where id = ? and project_id = ?").params(tagId, projectId).query(Integer.class).single() == 0) {
+            throw new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Tag not found.");
+        }
+    }
+
+    /** Replaces a ticket's tags. Every tag must belong to the same project. */
+    private void setTicketTags(Long projectId, long ticketId, List<Long> tagIds) {
+        List<Long> wanted = tagIds == null ? List.of() : tagIds.stream().distinct().toList();
+        if (wanted.size() > MAX_TICKET_TAGS) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "TOO_MANY_TAGS", "A ticket can have at most " + MAX_TICKET_TAGS + " tags.");
+        }
+        wanted.forEach(t -> requireTag(projectId, t));
+        db.sql("delete from ticket_tag where ticket_id = ?").param(ticketId).update();
+        wanted.forEach(t -> db.sql("insert into ticket_tag (ticket_id, tag_id) values (?, ?)").params(ticketId, t).update());
+    }
+
+    // ---------- columns ----------
+
+    /** Adds a column just before Done, so Done stays last. */
+    public Board addColumn(String slug, Long userId, String name, String color) {
+        ProjectSummary project = requireOwner(slug, userId);
+        if (db.sql("select count(*) from board_column where project_id = ?").param(project.id()).query(Integer.class).single() >= MAX_COLUMNS) {
+            throw new ApiException(HttpStatus.CONFLICT, "TOO_MANY_COLUMNS", "A board can have at most " + MAX_COLUMNS + " columns.");
+        }
+        int at = db.sql("select coalesce(min(position), -1) from board_column where project_id = ? and status = 'DONE'")
+                .param(project.id()).query(Integer.class).single();
+        if (at < 0) {
+            at = db.sql("select coalesce(max(position) + 1, 0) from board_column where project_id = ?").param(project.id()).query(Integer.class).single();
+        }
+        // Shift in two steps because (project_id, position) is unique.
+        db.sql("update board_column set position = position + 1000 where project_id = ? and position >= ?").params(project.id(), at).update();
+        db.sql("update board_column set position = position - 999 where project_id = ? and position >= 1000").param(project.id()).update();
+        db.sql("insert into board_column (project_id, name, position, status, color) values (?, ?, ?, 'CUSTOM', ?)")
+                .params(project.id(), name.trim(), at, color).update();
+        return board(slug, userId);
+    }
+
+    public Board updateColumn(String slug, Long userId, Long columnId, String name, String color) {
+        ProjectSummary project = requireOwner(slug, userId);
+        columnStatus(project.id(), columnId);
+        if (name != null && !name.isBlank()) {
+            db.sql("update board_column set name = ? where id = ?").params(name.trim(), columnId).update();
+        }
+        if (color != null) {
+            db.sql("update board_column set color = ? where id = ?").params(color, columnId).update();
+        }
+        return board(slug, userId);
+    }
+
+    /** Backlog and Done are required: new tickets land in Backlog and Done marks finished work. */
+    public Board deleteColumn(String slug, Long userId, Long columnId) {
+        ProjectSummary project = requireOwner(slug, userId);
+        String status = columnStatus(project.id(), columnId);
+        if ("BACKLOG".equals(status) || "DONE".equals(status)) {
+            throw new ApiException(HttpStatus.CONFLICT, "COLUMN_REQUIRED", "Backlog and Done cannot be removed.");
+        }
+        if (db.sql("select count(*) from ticket where column_id = ?").param(columnId).query(Integer.class).single() > 0) {
+            throw new ApiException(HttpStatus.CONFLICT, "COLUMN_NOT_EMPTY", "Move its tickets to another column first.");
+        }
+        db.sql("delete from board_column where id = ?").param(columnId).update();
+        List<Long> rest = db.sql("select id from board_column where project_id = ? order by position").param(project.id()).query(Long.class).list();
+        applyOrder(project.id(), rest);
+        return board(slug, userId);
+    }
+
+    public Board reorderColumns(String slug, Long userId, List<Long> ids) {
+        ProjectSummary project = requireOwner(slug, userId);
+        List<Long> current = db.sql("select id from board_column where project_id = ?").param(project.id()).query(Long.class).list();
+        if (ids.size() != current.size() || !current.containsAll(ids) || ids.stream().distinct().count() != ids.size()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "BAD_ORDER", "Send every column exactly once.");
+        }
+        applyOrder(project.id(), ids);
+        return board(slug, userId);
+    }
+
+    private void applyOrder(Long projectId, List<Long> ids) {
+        db.sql("update board_column set position = position + 1000 where project_id = ?").param(projectId).update();
+        for (int i = 0; i < ids.size(); i++) {
+            db.sql("update board_column set position = ? where id = ? and project_id = ?").params(i, ids.get(i), projectId).update();
+        }
+    }
+
+    private String columnStatus(Long projectId, Long columnId) {
+        return db.sql("select status from board_column where id = ? and project_id = ?").params(columnId, projectId)
+                .query(String.class).optional().orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Column not found."));
+    }
+
+    /** Changes the key prefix and digits and renames every existing ticket to match. Numbers never change. */
     public TicketFormat setTicketFormat(String slug, Long userId, UpdateTicketFormatRequest r) {
         ProjectSummary project = requireOwner(slug, userId);
-        TicketFormat f = new TicketFormat(r.digits(), r.featurePrefix().toUpperCase(Locale.ROOT),
-                r.hotfixPrefix().toUpperCase(Locale.ROOT), r.bugfixPrefix().toUpperCase(Locale.ROOT));
-        if (f.featurePrefix().equals(f.hotfixPrefix()) || f.featurePrefix().equals(f.bugfixPrefix()) || f.hotfixPrefix().equals(f.bugfixPrefix())) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "DUPLICATE_PREFIX", "Each ticket type needs its own prefix.",
-                    Map.of("featurePrefix", "Each ticket type needs its own prefix."));
-        }
-        db.sql("update project set key_digits = ?, prefix_feature = ?, prefix_hotfix = ?, prefix_bugfix = ? where id = ?")
-                .params(f.digits(), f.featurePrefix(), f.hotfixPrefix(), f.bugfixPrefix(), project.id()).update();
-        // Two steps, because a swap such as FT to HF and HF to FT would otherwise collide on the unique key.
-        db.sql("update ticket set ticket_key = concat('~', id) where project_id = ?").param(project.id()).update();
-        for (TicketType t : TicketType.values()) {
-            db.sql("update ticket set ticket_key = concat(?, '-', lpad(number, ?, '0')) where project_id = ? and type = ?")
-                    .params(f.prefix(t), f.digits(), project.id(), t.name()).update();
-        }
+        TicketFormat f = new TicketFormat(r.digits(), TicketFormat.normalize(r.prefix()));
+        db.sql("update project set key_digits = ?, key_prefix = ? where id = ?").params(f.digits(), f.prefix(), project.id()).update();
+        db.sql("update ticket set ticket_key = concat(?, '-', lpad(number, ?, '0')) where project_id = ?")
+                .params(f.prefix(), f.digits(), project.id()).update();
         return f;
     }
 
@@ -216,31 +417,54 @@ public class ProjectService {
     public Board board(String slug, Long userId) {
         ProjectSummary project = requireMember(slug, userId);
         Map<Long, Column> columns = new LinkedHashMap<>();
-        db.sql("select id, name, status, position from board_column where project_id = ? order by position")
+        Map<Long, TicketCard> cards = new java.util.HashMap<>();
+        db.sql("select id, name, status, color, position from board_column where project_id = ? order by position")
                 .param(project.id())
-                .query((rs, i) -> new Column(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getInt(4), new ArrayList<>()))
+                .query((rs, i) -> new Column(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4), rs.getInt(5), new ArrayList<>()))
                 .list().forEach(c -> columns.put(c.id(), c));
         db.sql("""
-                select t.id, t.ticket_key, t.type, t.title, t.priority, t.column_id, t.assignee_id, a.display_name,
+                select t.id, t.ticket_key, t.title, t.priority_id, t.column_id,
                        (select count(*) from ticket_pr_link l where l.ticket_id = t.id) as prs,
                        (select l.state from ticket_pr_link l where l.ticket_id = t.id order by l.updated_at desc, l.id desc limit 1) as pr_state,
-                       (select count(*) from ticket_comment c where c.ticket_id = t.id) as comments
-                from ticket t left join app_user a on a.id = t.assignee_id
+                       (select count(*) from ticket_comment c where c.ticket_id = t.id) as comments,
+                       t.created_at
+                from ticket t
                 where t.project_id = ? order by t.column_id, t.position, t.id""")
                 .param(project.id())
                 .query((rs, i) -> {
-                    Long assignee = rs.getObject("assignee_id") == null ? null : rs.getLong("assignee_id");
                     TicketCard card = new TicketCard(rs.getLong("id"), rs.getString("ticket_key"),
-                            TicketType.valueOf(rs.getString("type")), rs.getString("title"),
-                            Priority.valueOf(rs.getString("priority")), assignee, rs.getString("display_name"),
-                            rs.getInt("prs"), rs.getString("pr_state"), rs.getInt("comments"));
+                            rs.getString("title"),
+                            rs.getLong("priority_id"), new ArrayList<>(),
+                            rs.getInt("prs"), rs.getString("pr_state"), rs.getInt("comments"), new ArrayList<>(),
+                            rs.getTimestamp("created_at").toInstant());
                     Column col = columns.get(rs.getLong("column_id"));
                     if (col != null) {
                         col.tickets().add(card);
                     }
+                    cards.put(card.id(), card);
                     return card;
                 }).list();
-        return new Board(project, new ArrayList<>(columns.values()), members(project.id()), formats.load(project.id()));
+        db.sql("""
+                select ta.ticket_id, u.id, u.display_name from ticket_assignee ta
+                join ticket t on t.id = ta.ticket_id join app_user u on u.id = ta.user_id
+                where t.project_id = ? order by u.display_name""")
+                .param(project.id()).query((rs, i) -> {
+                    TicketCard card = cards.get(rs.getLong(1));
+                    if (card != null) {
+                        card.assignees().add(new Assignee(rs.getLong(2), rs.getString(3)));
+                    }
+                    return 0;
+                }).list();
+        db.sql("select tt.ticket_id, tt.tag_id from ticket_tag tt join ticket t on t.id = tt.ticket_id where t.project_id = ? order by tt.tag_id")
+                .param(project.id()).query((rs, i) -> {
+                    TicketCard card = cards.get(rs.getLong(1));
+                    if (card != null) {
+                        card.tagIds().add(rs.getLong(2));
+                    }
+                    return 0;
+                }).list();
+        return new Board(project, new ArrayList<>(columns.values()), members(project.id()), formats.load(project.id()),
+                tags(project.id()), priorities(project.id()));
     }
 
     // ---------- tickets ----------
@@ -250,28 +474,29 @@ public class ProjectService {
         long columnId = r.columnId() != null ? requireColumn(project.id(), r.columnId())
                 : db.sql("select id from board_column where project_id = ? and status = 'BACKLOG' order by position limit 1")
                         .param(project.id()).query(Long.class).single();
-        if (r.assigneeId() != null) {
-            requireProjectMember(project.id(), r.assigneeId());
+        if (r.priorityId() != null) {
+            requirePriority(project.id(), r.priorityId());
         }
-        String prefix = r.type().prefix();
         int number = db.sql("select last_number from ticket_counter where project_id = ? and prefix = ? for update")
-                .params(project.id(), prefix).query(Integer.class).optional().map(n -> n + 1).orElse(1);
+                .params(project.id(), COUNTER).query(Integer.class).optional().map(n -> n + 1).orElse(1);
         db.sql("""
                 insert into ticket_counter (project_id, prefix, last_number) values (?, ?, ?)
                 on duplicate key update last_number = values(last_number)""")
-                .params(project.id(), prefix, number).update();
+                .params(project.id(), COUNTER, number).update();
         int position = db.sql("select coalesce(max(position) + 1, 0) from ticket where column_id = ?")
                 .param(columnId).query(Integer.class).single();
-        String key = formats.load(project.id()).key(r.type(), number);
+        String key = formats.load(project.id()).key(number);
         Timestamp ts = now();
         GeneratedKeyHolder keys = new GeneratedKeyHolder();
         db.sql("""
-                insert into ticket (project_id, type, number, ticket_key, title, description, column_id, position,
-                                    priority, assignee_id, created_by, created_at, updated_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""")
-                .params(project.id(), r.type().name(), number, key, r.title().trim(), blankToNull(r.description()), columnId, position,
-                        (r.priority() == null ? Priority.MEDIUM : r.priority()).name(), r.assigneeId(), userId, ts, ts)
+                insert into ticket (project_id, number, ticket_key, title, description, column_id, position,
+                                    priority_id, created_by, created_at, updated_at)
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""")
+                .params(project.id(), number, key, r.title().trim(), blankToNull(r.description()), columnId, position,
+                        r.priorityId() == null ? defaultPriority(project.id()) : r.priorityId(), userId, ts, ts)
                 .update(keys);
+        setTicketAssignees(project.id(), keys.getKey().longValue(), r.assigneeIds());
+        setTicketTags(project.id(), keys.getKey().longValue(), r.tagIds());
         event(keys.getKey().longValue(), userId, "USER", "CREATED", null);
         return ticket(slug, key, userId);
     }
@@ -283,16 +508,15 @@ public class ProjectService {
 
     private TicketDetail loadDetail(Long projectId, String key) {
         var base = db.sql("""
-                select t.id, t.ticket_key, t.type, t.title, t.description, t.priority, t.column_id, c.name as column_name,
-                       c.status, t.assignee_id, a.display_name as assignee, u.display_name as creator, t.created_at, t.updated_at
+                select t.id, t.ticket_key, t.title, t.description, t.priority_id, t.column_id, c.name as column_name,
+                       c.status, u.display_name as creator, t.created_at, t.updated_at
                 from ticket t join board_column c on c.id = t.column_id
-                left join app_user a on a.id = t.assignee_id left join app_user u on u.id = t.created_by
+                left join app_user u on u.id = t.created_by
                 where t.project_id = ? and t.ticket_key = ?""")
                 .params(projectId, key)
-                .query((rs, i) -> new Object[] {rs.getLong("id"), rs.getString("ticket_key"), rs.getString("type"),
-                        rs.getString("title"), rs.getString("description"), rs.getString("priority"), rs.getLong("column_id"),
+                .query((rs, i) -> new Object[] {rs.getLong("id"), rs.getString("ticket_key"),
+                        rs.getString("title"), rs.getString("description"), rs.getLong("priority_id"), rs.getLong("column_id"),
                         rs.getString("column_name"), rs.getString("status"),
-                        rs.getObject("assignee_id") == null ? null : rs.getLong("assignee_id"), rs.getString("assignee"),
                         rs.getString("creator"), rs.getTimestamp("created_at").toInstant(), rs.getTimestamp("updated_at").toInstant()})
                 .optional().orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "NOT_FOUND", "Ticket not found."));
         Long id = (Long) base[0];
@@ -309,9 +533,12 @@ public class ProjectService {
                 left join app_user u on u.id = e.actor_id where e.ticket_id = ? order by e.created_at desc, e.id desc limit 50""")
                 .param(id).query((rs, i) -> new Event(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4),
                         rs.getString(5), rs.getTimestamp(6).toInstant())).list();
-        return new TicketDetail(id, (String) base[1], TicketType.valueOf((String) base[2]), (String) base[3], (String) base[4],
-                Priority.valueOf((String) base[5]), (Long) base[6], (String) base[7], (String) base[8], (Long) base[9],
-                (String) base[10], (String) base[11], (java.time.Instant) base[12], (java.time.Instant) base[13], prs, comments, events);
+        return new TicketDetail(id, (String) base[1], (String) base[2], (String) base[3],
+                (Long) base[4], (Long) base[5], (String) base[6], (String) base[7],
+                db.sql("select u.id, u.display_name from ticket_assignee ta join app_user u on u.id = ta.user_id where ta.ticket_id = ? order by u.display_name")
+                        .param(id).query((rs, i) -> new Assignee(rs.getLong(1), rs.getString(2))).list(),
+                (String) base[8], (java.time.Instant) base[9], (java.time.Instant) base[10], prs, comments, events,
+                db.sql("select tag_id from ticket_tag where ticket_id = ? order by tag_id").param(id).query(Long.class).list());
     }
 
     public TicketDetail update(String slug, String key, Long userId, UpdateTicketRequest r) {
@@ -325,17 +552,24 @@ public class ProjectService {
             db.sql("update ticket set description = ?, updated_at = ? where id = ?").params(blankToNull(r.description()), now(), cur.id()).update();
             event(cur.id(), userId, "USER", "DESCRIPTION_CHANGED", null);
         }
-        if (r.priority() != null && r.priority() != cur.priority()) {
-            db.sql("update ticket set priority = ?, updated_at = ? where id = ?").params(r.priority().name(), now(), cur.id()).update();
-            event(cur.id(), userId, "USER", "PRIORITY_CHANGED", cur.priority() + " to " + r.priority());
+        if (r.priorityId() != null && !r.priorityId().equals(cur.priorityId())) {
+            requirePriority(project.id(), r.priorityId());
+            String from = db.sql("select name from ticket_priority where id = ?").param(cur.priorityId()).query(String.class).optional().orElse("none");
+            String to = db.sql("select name from ticket_priority where id = ?").param(r.priorityId()).query(String.class).single();
+            db.sql("update ticket set priority_id = ?, updated_at = ? where id = ?").params(r.priorityId(), now(), cur.id()).update();
+            event(cur.id(), userId, "USER", "PRIORITY_CHANGED", from + " to " + to);
         }
-        if (Boolean.TRUE.equals(r.clearAssignee()) && cur.assigneeId() != null) {
-            db.sql("update ticket set assignee_id = null, updated_at = ? where id = ?").params(now(), cur.id()).update();
-            event(cur.id(), userId, "USER", "UNASSIGNED", null);
-        } else if (r.assigneeId() != null && !r.assigneeId().equals(cur.assigneeId())) {
-            requireProjectMember(project.id(), r.assigneeId());
-            db.sql("update ticket set assignee_id = ?, updated_at = ? where id = ?").params(r.assigneeId(), now(), cur.id()).update();
-            event(cur.id(), userId, "USER", "ASSIGNED", db.sql("select display_name from app_user where id = ?").param(r.assigneeId()).query(String.class).single());
+        if (r.assigneeIds() != null && !new java.util.HashSet<>(r.assigneeIds()).equals(
+                cur.assignees().stream().map(Assignee::id).collect(java.util.stream.Collectors.toSet()))) {
+            setTicketAssignees(project.id(), cur.id(), r.assigneeIds());
+            db.sql("update ticket set updated_at = ? where id = ?").params(now(), cur.id()).update();
+            List<String> names = db.sql("select u.display_name from ticket_assignee ta join app_user u on u.id = ta.user_id where ta.ticket_id = ? order by u.display_name")
+                    .param(cur.id()).query(String.class).list();
+            event(cur.id(), userId, "USER", "ASSIGNEES_CHANGED", names.isEmpty() ? "nobody" : String.join(", ", names));
+        }
+        if (r.tagIds() != null && !new java.util.HashSet<>(r.tagIds()).equals(new java.util.HashSet<>(cur.tagIds()))) {
+            setTicketTags(project.id(), cur.id(), r.tagIds());
+            event(cur.id(), userId, "USER", "TAGS_CHANGED", null);
         }
         return loadDetail(project.id(), key);
     }
@@ -372,6 +606,17 @@ public class ProjectService {
         return db.sql("select id from board_column where id = ? and project_id = ?").params(columnId, projectId)
                 .query(Long.class).optional()
                 .orElseThrow(() -> new ApiException(HttpStatus.BAD_REQUEST, "BAD_COLUMN", "That column is not on this board."));
+    }
+
+    /** Replaces a ticket's assignees. Every one must be a member of the project. */
+    private void setTicketAssignees(Long projectId, long ticketId, List<Long> userIds) {
+        List<Long> wanted = userIds == null ? List.of() : userIds.stream().distinct().toList();
+        if (wanted.size() > 10) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "TOO_MANY_ASSIGNEES", "A ticket can have at most 10 assignees.");
+        }
+        wanted.forEach(u -> requireProjectMember(projectId, u));
+        db.sql("delete from ticket_assignee where ticket_id = ?").param(ticketId).update();
+        wanted.forEach(u -> db.sql("insert into ticket_assignee (ticket_id, user_id) values (?, ?)").params(ticketId, u).update());
     }
 
     private void requireProjectMember(Long projectId, Long userId) {

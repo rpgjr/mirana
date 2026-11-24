@@ -46,6 +46,63 @@ public class ProjectController {
         return projects.rename(slug, user.id(), r.name());
     }
 
+    @PostMapping("/{slug}/tags")
+    ResponseEntity<Board> addTag(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @Valid @RequestBody AddTagRequest r) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(projects.addTag(slug, user.id(), r.name(), r.color()));
+    }
+
+    @PatchMapping("/{slug}/tags/{tagId}")
+    Board updateTag(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @PathVariable Long tagId, @Valid @RequestBody UpdateTagRequest r) {
+        return projects.updateTag(slug, user.id(), tagId, r.name(), r.color());
+    }
+
+    @DeleteMapping("/{slug}/tags/{tagId}")
+    Board deleteTag(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @PathVariable Long tagId) {
+        return projects.deleteTag(slug, user.id(), tagId);
+    }
+
+    @PostMapping("/{slug}/priorities")
+    ResponseEntity<Board> addPriority(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @Valid @RequestBody AddPriorityRequest r) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(projects.addPriority(slug, user.id(), r.name(), r.color()));
+    }
+
+    @PutMapping("/{slug}/priorities/order")
+    Board reorderPriorities(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @Valid @RequestBody ReorderColumnsRequest r) {
+        return projects.reorderPriorities(slug, user.id(), r.ids());
+    }
+
+    @PatchMapping("/{slug}/priorities/{priorityId}")
+    Board updatePriority(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @PathVariable Long priorityId,
+            @Valid @RequestBody UpdatePriorityRequest r) {
+        return projects.updatePriority(slug, user.id(), priorityId, r.name(), r.color());
+    }
+
+    @DeleteMapping("/{slug}/priorities/{priorityId}")
+    Board deletePriority(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @PathVariable Long priorityId) {
+        return projects.deletePriority(slug, user.id(), priorityId);
+    }
+
+    @PostMapping("/{slug}/columns")
+    ResponseEntity<Board> addColumn(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @Valid @RequestBody AddColumnRequest r) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(projects.addColumn(slug, user.id(), r.name(), r.color()));
+    }
+
+    @PutMapping("/{slug}/columns/order")
+    Board reorderColumns(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @Valid @RequestBody ReorderColumnsRequest r) {
+        return projects.reorderColumns(slug, user.id(), r.ids());
+    }
+
+    @PatchMapping("/{slug}/columns/{columnId}")
+    Board updateColumn(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @PathVariable Long columnId,
+            @Valid @RequestBody UpdateColumnRequest r) {
+        return projects.updateColumn(slug, user.id(), columnId, r.name(), r.color());
+    }
+
+    @DeleteMapping("/{slug}/columns/{columnId}")
+    Board deleteColumn(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @PathVariable Long columnId) {
+        return projects.deleteColumn(slug, user.id(), columnId);
+    }
+
     @PutMapping("/{slug}/ticket-format")
     TicketFormat setTicketFormat(@AuthenticationPrincipal AuthUser user, @PathVariable String slug, @Valid @RequestBody UpdateTicketFormatRequest r) {
         return projects.setTicketFormat(slug, user.id(), r);

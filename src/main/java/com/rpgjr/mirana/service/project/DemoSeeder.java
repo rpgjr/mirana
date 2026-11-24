@@ -1,7 +1,5 @@
 package com.rpgjr.mirana.service.project;
 
-import com.rpgjr.mirana.enums.Priority;
-import com.rpgjr.mirana.enums.TicketType;
 import com.rpgjr.mirana.model.dto.project.ProjectDtos;
 
 import com.rpgjr.mirana.model.dto.project.ProjectDtos.CreateTicketRequest;
@@ -61,14 +59,14 @@ public class DemoSeeder implements ApplicationRunner {
         var mep = projects.create(uid, "mepmep", List.of("rpgjr/mepmep", "rpgjr/mepmep-ui"));
         long hopId = hop.id();
 
-        t(hop.slug(), uid, TicketType.FEATURE, "Profile page with avatar upload", "Let riders edit their name and photo. Crop to a square and store the file in object storage.", Priority.MEDIUM, "Backlog", 0);
-        t(hop.slug(), uid, TicketType.BUGFIX, "Date picker shows the wrong month on Safari", "Opening the picker on Safari 17 starts one month late when the device timezone is behind UTC.", Priority.HIGH, "Backlog", 0);
-        t(hop.slug(), uid, TicketType.FEATURE, "Add forgot password flow", "Email a 6 digit code, then ask for a new password. Reuse the OTP component.", Priority.HIGH, "To do", 0);
-        String login = t(hop.slug(), uid, TicketType.FEATURE, "Login page redesign", "Move the login form to the new dark layout. Add show password, inline errors that name the field, and keep paste enabled for password managers.", Priority.URGENT, "In progress", 0);
-        String webhook = t(hop.slug(), uid, TicketType.HOTFIX, "Payment webhook returns 500 on retry", "The provider retries a failed delivery and we throw on the duplicate event id. Make the handler idempotent.", Priority.URGENT, "In progress", 1);
-        String session = t(hop.slug(), uid, TicketType.BUGFIX, "Session expires too early", "Users are signed out after 30 minutes even while active. Extend the idle timeout and refresh on activity.", Priority.MEDIUM, "Done", 0);
-        t(mep.slug(), uid, TicketType.FEATURE, "Import contacts from CSV", "Upload a CSV, map columns, preview the first 20 rows, then import.", Priority.MEDIUM, "To do", 0);
-        t(mep.slug(), uid, TicketType.BUGFIX, "Export button does nothing on empty list", "Disable the button and show a hint when there is nothing to export.", Priority.LOW, "Backlog", 0);
+        t(hop.slug(), uid, "Profile page with avatar upload", "Let riders edit their name and photo. Crop to a square and store the file in object storage.", "Medium", "Backlog", 0);
+        t(hop.slug(), uid, "Date picker shows the wrong month on Safari", "Opening the picker on Safari 17 starts one month late when the device timezone is behind UTC.", "High", "Backlog", 0);
+        t(hop.slug(), uid, "Add forgot password flow", "Email a 6 digit code, then ask for a new password. Reuse the OTP component.", "High", "On hold", 0);
+        String login = t(hop.slug(), uid, "Login page redesign", "Move the login form to the new dark layout. Add show password, inline errors that name the field, and keep paste enabled for password managers.", "Urgent", "In progress", 0);
+        String webhook = t(hop.slug(), uid, "Payment webhook returns 500 on retry", "The provider retries a failed delivery and we throw on the duplicate event id. Make the handler idempotent.", "Urgent", "In progress", 1);
+        String session = t(hop.slug(), uid, "Session expires too early", "Users are signed out after 30 minutes even while active. Extend the idle timeout and refresh on activity.", "Medium", "Done", 0);
+        t(mep.slug(), uid, "Import contacts from CSV", "Upload a CSV, map columns, preview the first 20 rows, then import.", "Medium", "In review", 0);
+        t(mep.slug(), uid, "Export button does nothing on empty list", "Disable the button and show a hint when there is nothing to export.", "Low", "Backlog", 0);
 
         pr(hopId, login, "rpgjr/hophop", 42, login + "-login-page", "Redesign login page", "OPEN");
         pr(hopId, login, "rpgjr/hophop", 40, login + "-input-component", "Add shared Input component", "MERGED");
@@ -81,10 +79,12 @@ public class DemoSeeder implements ApplicationRunner {
         log.warn("Seeded demo projects hophop and mepmep for {}", email);
     }
 
-    private String t(String slug, long uid, TicketType type, String title, String desc, Priority p, String column, int position) {
+    private String t(String slug, long uid, String title, String desc, String priority, String column, int position) {
         Long colId = db.sql("select c.id from board_column c join project pr on pr.id = c.project_id where pr.slug = ? and c.name = ?")
                 .params(slug, column).query(Long.class).single();
-        var d = projects.createTicket(slug, uid, new CreateTicketRequest(type, title, desc, p, uid, colId));
+        Long priorityId = db.sql("select tp.id from ticket_priority tp join project pr on pr.id = tp.project_id where pr.slug = ? and tp.name = ?")
+                .params(slug, priority).query(Long.class).single();
+        var d = projects.createTicket(slug, uid, new CreateTicketRequest(title, desc, priorityId, List.of(uid), colId, null));
         projects.move(slug, d.key(), uid, new MoveRequest(colId, position));
         return d.key();
     }

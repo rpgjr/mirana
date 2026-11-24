@@ -6,10 +6,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-import com.rpgjr.mirana.enums.Priority;
 import com.rpgjr.mirana.model.dto.project.ProjectDtos.CreateTicketRequest;
 import com.rpgjr.mirana.service.project.ProjectService;
-import com.rpgjr.mirana.enums.TicketType;
 import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -42,7 +40,7 @@ class GithubWebhookTest {
         long ana = jdbc.queryForObject("select id from app_user", Long.class);
         var project = projects.create(ana, "Hophop", java.util.List.of("rpgjr/hophop", "RPGJR/Hophop-UI"));
         key = projects.createTicket(project.slug(), ana,
-                new CreateTicketRequest(TicketType.FEATURE, "Login page", null, Priority.MEDIUM, null, null)).key();
+                new CreateTicketRequest("Login page", null, null, null, null, null)).key();
     }
 
     private ResultActions send(String delivery, String event, String body, String signature) throws Exception {
@@ -89,12 +87,29 @@ class GithubWebhookTest {
 
     @Test
     void usesTheProjectsOwnKeyFormat() throws Exception {
-        jdbc.update("update project set key_digits = 3, prefix_feature = 'MIR'");
+        jdbc.update("update project set key_digits = 3, key_prefix = 'MIR'");
         jdbc.update("update ticket set ticket_key = 'MIR-001'");
         sendSigned("d1", pr("opened", "open", false, "MIR-1", "rpgjr/hophop")).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isEqualTo(1);
         sendSigned("d2", pr("opened", "open", false, "FT-00001", "rpgjr/hophop")).andExpect(status().isOk());
         assertThat(jdbc.queryForObject("select count(*) from ticket_pr_link", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void pushedCommitsBecomeActivityOnTheTicketNamedInTheBranchOrMessage() throws Exception {
+        String body = """
+                {"ref":"refs/heads/%s","repository":{"full_name":"rpgjr/hophop"},
+                 "commits":[{"id":"abc1234def5678","message":"Add form\\n\\nlong body","author":{"name":"Rod"}},
+                            {"id":"fff9999aaa0000","message":"Fix typo for FT-00999","author":{"name":"Rod"}}]}""".formatted(key);
+        send("p1", "push", body, WebhookSignature.sign(SECRET, body.getBytes(StandardCharsets.UTF_8))).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select count(*) from ticket_event where event_type = 'COMMIT'", Integer.class)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("select json_unquote(json_extract(payload, '$.detail')) from ticket_event where event_type = 'COMMIT' order by id limit 1", String.class))
+                .isEqualTo("abc1234\tAdd form\tRod");
+        send("p2", "push", body, WebhookSignature.sign(SECRET, body.getBytes(StandardCharsets.UTF_8))).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select count(*) from ticket_event where event_type = 'COMMIT'", Integer.class)).isEqualTo(2);
+        String other = body.replace("refs/heads/" + key, "refs/heads/main").replace("abc1234def5678", "1112223334445");
+        send("p3", "push", other, WebhookSignature.sign(SECRET, other.getBytes(StandardCharsets.UTF_8))).andExpect(status().isOk());
+        assertThat(jdbc.queryForObject("select count(*) from ticket_event where event_type = 'COMMIT'", Integer.class)).isEqualTo(2);
     }
 
     @Test

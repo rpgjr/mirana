@@ -1,7 +1,5 @@
 package com.rpgjr.mirana.model.dto.project;
 
-import com.rpgjr.mirana.enums.Priority;
-import com.rpgjr.mirana.enums.TicketType;
 
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -43,39 +41,82 @@ public final class ProjectDtos {
 
     public record UpdateTicketFormatRequest(
             @Min(value = 1, message = "Use 1 to 8 digits.") @Max(value = 8, message = "Use 1 to 8 digits.") int digits,
-            @NotBlank(message = "Enter a prefix.") @Pattern(regexp = PREFIX_PATTERN, message = "Use 2 to 6 letters or digits, starting with a letter.") String featurePrefix,
-            @NotBlank(message = "Enter a prefix.") @Pattern(regexp = PREFIX_PATTERN, message = "Use 2 to 6 letters or digits, starting with a letter.") String hotfixPrefix,
-            @NotBlank(message = "Enter a prefix.") @Pattern(regexp = PREFIX_PATTERN, message = "Use 2 to 6 letters or digits, starting with a letter.") String bugfixPrefix) {
+            @NotBlank(message = "Enter a prefix.") @Pattern(regexp = PREFIX_PATTERN, message = "Use 2 to 6 letters or digits, starting with a letter.") String prefix) {
+    }
+
+    public static final String COLOR_PATTERN = "^#[0-9a-fA-F]{6}$";
+
+    public record AddColumnRequest(
+            @NotBlank(message = "Enter a column name.") @Size(max = 40, message = "Name is too long.") String name,
+            @NotBlank(message = "Pick a color.") @Pattern(regexp = COLOR_PATTERN, message = "Use a hex color like #3b82f6.") String color) {
+    }
+
+    public record UpdateColumnRequest(
+            @Size(min = 1, max = 40, message = "Use 1 to 40 characters.") String name,
+            @Pattern(regexp = COLOR_PATTERN, message = "Use a hex color like #3b82f6.") String color) {
+    }
+
+    public record ReorderColumnsRequest(@NotNull(message = "Send the column order.") List<Long> ids) {
+    }
+
+    public record TagView(Long id, String name, String color) {
+    }
+
+    public record PriorityView(Long id, String name, String color) {
+    }
+
+    public record AddTagRequest(
+            @NotBlank(message = "Enter a tag name.") @Size(max = 30, message = "Name is too long.") String name,
+            @NotBlank(message = "Pick a color.") @Pattern(regexp = COLOR_PATTERN, message = "Use a hex color like #3b82f6.") String color) {
+    }
+
+    public record UpdateTagRequest(
+            @Size(min = 1, max = 30, message = "Use 1 to 30 characters.") String name,
+            @Pattern(regexp = COLOR_PATTERN, message = "Use a hex color like #3b82f6.") String color) {
+    }
+
+    public record AddPriorityRequest(
+            @NotBlank(message = "Enter a name.") @Size(max = 20, message = "Name is too long.") String name,
+            @NotBlank(message = "Pick a color.") @Pattern(regexp = COLOR_PATTERN, message = "Use a hex color like #3b82f6.") String color) {
+    }
+
+    public record UpdatePriorityRequest(
+            @Size(min = 1, max = 20, message = "Use 1 to 20 characters.") String name,
+            @Pattern(regexp = COLOR_PATTERN, message = "Use a hex color like #3b82f6.") String color) {
     }
 
     public record Member(Long id, String displayName, String email, String role) {
     }
 
-    public record TicketCard(Long id, String key, TicketType type, String title, Priority priority,
-            Long assigneeId, String assigneeName, int prCount, String prState, int commentCount) {
+    public record Assignee(Long id, String name) {
     }
 
-    public record Column(Long id, String name, String status, int position, List<TicketCard> tickets) {
+    public record TicketCard(Long id, String key, String title, Long priorityId,
+            List<Assignee> assignees, int prCount, String prState, int commentCount, List<Long> tagIds, Instant createdAt) {
     }
 
-    public record Board(ProjectSummary project, List<Column> columns, List<Member> members, TicketFormat format) {
+    public record Column(Long id, String name, String status, String color, int position, List<TicketCard> tickets) {
+    }
+
+    public record Board(ProjectSummary project, List<Column> columns, List<Member> members, TicketFormat format,
+            List<TagView> tags, List<PriorityView> priorities) {
     }
 
     public record CreateTicketRequest(
-            @NotNull(message = "Pick a type.") TicketType type,
             @NotBlank(message = "Enter a title.") @Size(max = 200, message = "Title is too long.") String title,
             @Size(max = 20000, message = "Description is too long.") String description,
-            Priority priority,
-            Long assigneeId,
-            Long columnId) {
+            Long priorityId,
+            List<Long> assigneeIds,
+            Long columnId,
+            List<Long> tagIds) {
     }
 
     public record UpdateTicketRequest(
             @Size(min = 1, max = 200, message = "Title must be 1 to 200 characters.") String title,
             @Size(max = 20000, message = "Description is too long.") String description,
-            Priority priority,
-            Long assigneeId,
-            Boolean clearAssignee) {
+            Long priorityId,
+            List<Long> assigneeIds,
+            List<Long> tagIds) {
     }
 
     public record MoveRequest(@NotNull(message = "Pick a column.") Long columnId, int position) {
@@ -93,9 +134,9 @@ public final class ProjectDtos {
     public record Event(Long id, String actorType, String actorName, String type, String detail, Instant createdAt) {
     }
 
-    public record TicketDetail(Long id, String key, TicketType type, String title, String description, Priority priority,
-            Long columnId, String columnName, String status, Long assigneeId, String assigneeName,
+    public record TicketDetail(Long id, String key, String title, String description, Long priorityId,
+            Long columnId, String columnName, String status, List<Assignee> assignees,
             String createdByName, Instant createdAt, Instant updatedAt,
-            List<PrLink> pullRequests, List<Comment> comments, List<Event> events) {
+            List<PrLink> pullRequests, List<Comment> comments, List<Event> events, List<Long> tagIds) {
     }
 }

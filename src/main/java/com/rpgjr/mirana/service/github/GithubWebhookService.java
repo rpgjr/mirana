@@ -89,9 +89,17 @@ public class GithubWebhookService {
                     continue;
                 }
                 String detail = short7 + "\t" + first + "\t" + cut(c.path("author").path("name").asString(""), 100);
+                String commitUrl = c.path("url").asString("");
+                var payload = new java.util.LinkedHashMap<String, String>();
+                payload.put("detail", detail);
+                payload.put("sha", short7);
+                payload.put("branch", cut(branch, 250));
+                payload.put("repo", repo);
+                if (commitUrl.startsWith("https://github.com/")) {
+                    payload.put("url", cut(commitUrl, 500));
+                }
                 db.sql("insert into ticket_event (ticket_id, actor_type, event_type, payload, created_at) values (?, 'GITHUB', 'COMMIT', ?, ?)")
-                        .params(ticketId, json.writeValueAsString(java.util.Map.of("detail", detail, "sha", short7, "branch", branch)),
-                                Timestamp.from(Instant.now()))
+                        .params(ticketId, json.writeValueAsString(payload), Timestamp.from(Instant.now()))
                         .update();
             }
         }
@@ -141,10 +149,15 @@ public class GithubWebhookService {
                     .params(ticketId, repo, number, cut(branch, 250), cut(title, 300), cut(url, 500), state, Timestamp.from(Instant.now()))
                     .update();
             if (!state.equals(before)) {
-                String detail = "#" + number + " " + state.toLowerCase(Locale.ROOT);
+                var payload = new java.util.LinkedHashMap<String, String>();
+                payload.put("detail", "#" + number + " " + state.toLowerCase(Locale.ROOT));
+                payload.put("repo", repo);
+                payload.put("branch", cut(branch, 250));
+                if (url != null) {
+                    payload.put("url", cut(url, 500));
+                }
                 db.sql("insert into ticket_event (ticket_id, actor_type, event_type, payload, created_at) values (?, 'GITHUB', ?, ?, ?)")
-                        .params(ticketId, before == null ? "PR_LINKED" : "PR_" + state, "{\"detail\":\"" + detail.replace("\"", "") + "\"}",
-                                Timestamp.from(Instant.now()))
+                        .params(ticketId, before == null ? "PR_LINKED" : "PR_" + state, json.writeValueAsString(payload), Timestamp.from(Instant.now()))
                         .update();
             }
             log.info("PR {}#{} linked to {} ({})", repo, number, key, state);

@@ -529,10 +529,11 @@ public class ProjectService {
                 .param(id).query((rs, i) -> new Comment(rs.getLong(1), rs.getLong(2), rs.getString(3), rs.getString(4),
                         rs.getTimestamp(5).toInstant())).list();
         List<Event> events = db.sql("""
-                select e.id, e.actor_type, u.display_name, e.event_type, json_unquote(json_extract(e.payload, '$.detail')), e.created_at from ticket_event e
+                select e.id, e.actor_type, u.display_name, e.event_type, json_unquote(json_extract(e.payload, '$.detail')), e.created_at,
+                       json_unquote(json_extract(e.payload, '$.repo')), json_unquote(json_extract(e.payload, '$.branch')), json_unquote(json_extract(e.payload, '$.url')) from ticket_event e
                 left join app_user u on u.id = e.actor_id where e.ticket_id = ? order by e.created_at desc, e.id desc limit 50""")
                 .param(id).query((rs, i) -> new Event(rs.getLong(1), rs.getString(2), rs.getString(3), rs.getString(4),
-                        rs.getString(5), rs.getTimestamp(6).toInstant())).list();
+                        rs.getString(5), rs.getTimestamp(6).toInstant(), rs.getString(7), rs.getString(8), rs.getString(9))).list();
         return new TicketDetail(id, (String) base[1], (String) base[2], (String) base[3],
                 (Long) base[4], (Long) base[5], (String) base[6], (String) base[7],
                 db.sql("select u.id, u.display_name from ticket_assignee ta join app_user u on u.id = ta.user_id where ta.ticket_id = ? order by u.display_name")

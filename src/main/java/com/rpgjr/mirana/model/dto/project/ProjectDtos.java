@@ -131,7 +131,8 @@ public final class ProjectDtos {
     public record Comment(Long id, Long authorId, String authorName, String body, Instant createdAt) {
     }
 
-    public record Event(Long id, String actorType, String actorName, String type, String detail, Instant createdAt) {
+    public record Event(Long id, String actorType, String actorName, String type, String detail, Instant createdAt,
+            String repo, String branch, String url) {
     }
 
     public record TicketDetail(Long id, String key, String title, String description, Long priorityId,
